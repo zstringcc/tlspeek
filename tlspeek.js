@@ -353,8 +353,12 @@ function emit(ch, env) {
   //   3. YAML to stdout (default — sub2api admin "粘贴 YAML 配置" accepts it)
   if (process.env.SUB2API_URL) {
     uploadToSub2api(profile)
-      .then((id) => {
-        process.stderr.write(`✓ Uploaded to sub2api: id=${id} name=${profile.name}\n`);
+      .then(({ id, skipped }) => {
+        if (skipped) {
+          process.stderr.write(`⏭  Profile "${profile.name}" already in pool (id=${id}) — nothing to upload (same OS/arch/Node-major machine produces same TLS fingerprint).\n`);
+        } else {
+          process.stderr.write(`✓ Uploaded to sub2api: id=${id} name=${profile.name}\n`);
+        }
         process.exit(0);
       })
       .catch((e) => die(`sub2api upload failed: ${e.message}`));
@@ -389,33 +393,48 @@ async function uploadToSub2api(profile) {
     }
     token = login.body.data.access_token;
   }
+  const authHeader = { Authorization: `Bearer ${token}` };
+
+  // Pre-check: same OS/arch/Node-major machine produces same TLS fingerprint,
+  // so name collisions are common (sub2api admin enforces unique name).
+  // If the profile already exists, just report it — no need to re-upload.
+  const list = await httpJSON('GET', `${base}/api/v1/admin/tls-fingerprint-profiles`, null, authHeader);
+  if (list.body.code === 0 && Array.isArray(list.body.data)) {
+    const existing = list.body.data.find((p) => p.name === profile.name);
+    if (existing) {
+      return { id: existing.id, skipped: true };
+    }
+  }
+
   const res = await httpJSON(
     'POST',
     `${base}/api/v1/admin/tls-fingerprint-profiles`,
     profile,
-    { Authorization: `Bearer ${token}` }
+    authHeader
   );
   if (res.body.code !== 0) {
     throw new Error(`POST: ${res.body.message || JSON.stringify(res.body)}`);
   }
-  return res.body.data && res.body.data.id;
+  return { id: res.body.data && res.body.data.id, skipped: false };
 }
 
 function httpJSON(method, urlStr, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const lib = u.protocol === 'https:' ? https : http;
-    const payload = JSON.stringify(body);
+    const hasBody = body !== null && body !== undefined;
+    const payload = hasBody ? JSON.stringify(body) : '';
+    const headers = { ...extraHeaders };
+    if (hasBody) {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
     const req = lib.request({
       method,
       hostname: u.hostname,
       port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-        ...extraHeaders,
-      },
+      headers,
     }, (res) => {
       let data = '';
       res.on('data', (c) => (data += c));
@@ -428,7 +447,7 @@ function httpJSON(method, urlStr, body, extraHeaders = {}) {
       });
     });
     req.on('error', reject);
-    req.write(payload);
+    if (hasBody) req.write(payload);
     req.end();
   });
 }
