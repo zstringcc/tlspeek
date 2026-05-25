@@ -1,0 +1,5 @@
+# Build artifacts
+tls-capture
+tls-capture-*
+# Captured profiles (per-environment outputs)
+tls-profile-*.json
