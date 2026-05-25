@@ -338,15 +338,58 @@ function emit(ch, env) {
     extensions: stripGREASE(ch.extensions),
   };
 
-  // Default: silent. JSON to stdout, nothing to stderr.
-  // Set TLSPEEK_VERBOSE=1 to see a one-line summary on stderr.
+  // Default: silent. YAML to stdout (sub2api admin UI expects YAML).
+  // TLSPEEK_FORMAT=json  → JSON output (for API POST / programmatic use)
+  // TLSPEEK_VERBOSE=1    → one-line summary on stderr
   if (process.env.TLSPEEK_VERBOSE === '1') {
     process.stderr.write(
       `tlspeek: ${name} — ${profile.cipher_suites.length} ciphers, ${profile.extensions.length} ext, ALPN=[${ch.alpnProtocols.join(', ')}], JA4=${ja4String(ch)}\n`
     );
   }
-  process.stdout.write(JSON.stringify(profile, null, 2) + '\n');
+  const format = (process.env.TLSPEEK_FORMAT || 'yaml').toLowerCase();
+  if (format === 'json') {
+    process.stdout.write(JSON.stringify(profile, null, 2) + '\n');
+  } else {
+    process.stdout.write(toYAML(profile) + '\n');
+  }
   process.exit(0);
+}
+
+// Block-style YAML formatter for our specific Profile schema.
+// Block style (not flow) is required because some YAML parsers (including
+// sub2api admin's) don't accept inline JSON-style flow mappings.
+function toYAML(p) {
+  const lines = [];
+  lines.push(`name: ${p.name}`);
+  if (p.description) lines.push(`description: ${quoteYAML(p.description)}`);
+  lines.push(`enable_grease: ${p.enable_grease}`);
+  for (const [key, list] of [
+    ['cipher_suites',        p.cipher_suites],
+    ['curves',               p.curves],
+    ['point_formats',        p.point_formats],
+    ['signature_algorithms', p.signature_algorithms],
+    ['alpn_protocols',       p.alpn_protocols],
+    ['supported_versions',   p.supported_versions],
+    ['key_share_groups',     p.key_share_groups],
+    ['psk_modes',            p.psk_modes],
+    ['extensions',           p.extensions],
+  ]) {
+    if (!list || list.length === 0) {
+      lines.push(`${key}: []`);
+      continue;
+    }
+    lines.push(`${key}:`);
+    for (const v of list) {
+      lines.push(typeof v === 'string' ? `  - ${quoteYAML(v)}` : `  - ${v}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// quoteYAML wraps strings safely for YAML — uses JSON.stringify which produces
+// double-quoted, escaped strings that are also valid YAML 1.2 scalars.
+function quoteYAML(s) {
+  return JSON.stringify(s);
 }
 
 main();
