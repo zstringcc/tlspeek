@@ -2,10 +2,29 @@
 
 Capture this machine's real Node.js TLS ClientHello as portable JSON.
 
-**One command. Pure Node. No install. No compile. JSON to stdout.**
+**One command. Pure Node. No install. No compile.**
 
+### Default — print YAML (paste into sub2api admin "粘贴 YAML 配置")
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/tlspeek.js | node
+```
+
+### Upload straight to sub2api admin — zero copy-paste
+```bash
+SUB2API_URL=http://YOUR-SUB2API:3004 \
+SUB2API_TOKEN=eyJh... \
+  bash -c 'curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/tlspeek.js | node'
+```
+Or with email+password (auto-login):
+```bash
+SUB2API_URL=http://YOUR-SUB2API:3004 \
+SUB2API_EMAIL=admin@sub2api.local \
+SUB2API_PASSWORD=... \
+  bash -c 'curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/tlspeek.js | node'
+```
+Output (stderr only):
+```
+✓ Uploaded to sub2api: id=3 name=darwin_arm64_node_v24
 ```
 
 ## What it does

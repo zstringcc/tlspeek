@@ -17,6 +17,9 @@ const net = require('net');
 const tls = require('tls');
 const os = require('os');
 const cp = require('child_process');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 
 // ----------------------------------------------------------------------------
 // ClientHello byte parser (mirrors the Go version's algorithm 1:1)
@@ -338,14 +341,26 @@ function emit(ch, env) {
     extensions: stripGREASE(ch.extensions),
   };
 
-  // Default: silent. YAML to stdout (sub2api admin UI expects YAML).
-  // TLSPEEK_FORMAT=json  → JSON output (for API POST / programmatic use)
-  // TLSPEEK_VERBOSE=1    → one-line summary on stderr
   if (process.env.TLSPEEK_VERBOSE === '1') {
     process.stderr.write(
       `tlspeek: ${name} — ${profile.cipher_suites.length} ciphers, ${profile.extensions.length} ext, ALPN=[${ch.alpnProtocols.join(', ')}], JA4=${ja4String(ch)}\n`
     );
   }
+
+  // Three output modes:
+  //   1. Upload to sub2api admin (if SUB2API_URL is set)
+  //   2. JSON to stdout (TLSPEEK_FORMAT=json)
+  //   3. YAML to stdout (default — sub2api admin "粘贴 YAML 配置" accepts it)
+  if (process.env.SUB2API_URL) {
+    uploadToSub2api(profile)
+      .then((id) => {
+        process.stderr.write(`✓ Uploaded to sub2api: id=${id} name=${profile.name}\n`);
+        process.exit(0);
+      })
+      .catch((e) => die(`sub2api upload failed: ${e.message}`));
+    return;
+  }
+
   const format = (process.env.TLSPEEK_FORMAT || 'yaml').toLowerCase();
   if (format === 'json') {
     process.stdout.write(JSON.stringify(profile, null, 2) + '\n');
@@ -353,6 +368,69 @@ function emit(ch, env) {
     process.stdout.write(toYAML(profile) + '\n');
   }
   process.exit(0);
+}
+
+// ----------------------------------------------------------------------------
+// sub2api admin upload (no external deps — Node stdlib http/https)
+// ----------------------------------------------------------------------------
+
+async function uploadToSub2api(profile) {
+  const base = process.env.SUB2API_URL.replace(/\/+$/, '');
+  let token = process.env.SUB2API_TOKEN;
+  if (!token) {
+    const email = process.env.SUB2API_EMAIL;
+    const password = process.env.SUB2API_PASSWORD;
+    if (!email || !password) {
+      throw new Error('Need SUB2API_TOKEN, or SUB2API_EMAIL + SUB2API_PASSWORD');
+    }
+    const login = await httpJSON('POST', `${base}/api/v1/auth/login`, { email, password });
+    if (login.body.code !== 0) {
+      throw new Error(`login: ${login.body.message || login.body.code}`);
+    }
+    token = login.body.data.access_token;
+  }
+  const res = await httpJSON(
+    'POST',
+    `${base}/api/v1/admin/tls-fingerprint-profiles`,
+    profile,
+    { Authorization: `Bearer ${token}` }
+  );
+  if (res.body.code !== 0) {
+    throw new Error(`POST: ${res.body.message || JSON.stringify(res.body)}`);
+  }
+  return res.body.data && res.body.data.id;
+}
+
+function httpJSON(method, urlStr, body, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const payload = JSON.stringify(body);
+    const req = lib.request({
+      method,
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        ...extraHeaders,
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch (e) {
+          reject(new Error(`bad JSON response (status=${res.statusCode}): ${data.slice(0, 200)}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
 }
 
 // Block-style YAML formatter for our specific Profile schema.
