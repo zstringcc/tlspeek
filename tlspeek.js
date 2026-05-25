@@ -338,12 +338,14 @@ function emit(ch, env) {
     extensions: stripGREASE(ch.extensions),
   };
 
-  const json = JSON.stringify(profile, null, 2);
-  // One-line summary to stderr (verbose details available in the JSON itself)
-  process.stderr.write(
-    `tlspeek: ${name} — ${profile.cipher_suites.length} ciphers, ${profile.extensions.length} ext, ALPN=[${ch.alpnProtocols.join(', ')}], JA4=${ja4String(ch)}\n`
-  );
-  process.stdout.write(json + '\n');
+  // Default: silent. JSON to stdout, nothing to stderr.
+  // Set TLSPEEK_VERBOSE=1 to see a one-line summary on stderr.
+  if (process.env.TLSPEEK_VERBOSE === '1') {
+    process.stderr.write(
+      `tlspeek: ${name} — ${profile.cipher_suites.length} ciphers, ${profile.extensions.length} ext, ALPN=[${ch.alpnProtocols.join(', ')}], JA4=${ja4String(ch)}\n`
+    );
+  }
+  process.stdout.write(JSON.stringify(profile, null, 2) + '\n');
   process.exit(0);
 }
 
