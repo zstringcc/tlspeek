@@ -2,41 +2,35 @@
 
 Capture this machine's real Node.js TLS ClientHello as portable JSON.
 
-**One command, no install, no file write — JSON to stdout.**
+**One command. Pure Node. No install. No compile. JSON to stdout.**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/run.sh)
+curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/tlspeek.js | node
 ```
 
 ## What it does
 
-- Spawns a Node `tls.connect()` against a local listener.
-- Reads the raw ClientHello bytes (~1500 B) — does **not** terminate TLS.
-- Parses the fields a fingerprint mocking stack needs (`cipher_suites`, `curves`, `point_formats`, `signature_algorithms`, `alpn`, `supported_versions`, `key_share_groups`, `psk_modes`, extensions order, GREASE flag).
-- Outputs JSON on **stdout**, all diagnostics on **stderr**.
+- Opens a local `net.createServer()` on a random port.
+- Calls `tls.connect()` in the same process targeting that listener — with ALPN `[h2, http/1.1]` + SNI `api.anthropic.com` (real Claude Code CLI shape).
+- Reads the raw ClientHello bytes (~1.5 KB), parses every field a fingerprint-mocking stack needs (`cipher_suites` / `curves` / `point_formats` / `signature_algorithms` / `alpn` / `supported_versions` / `key_share_groups` / `psk_modes` / extensions order / GREASE flag).
+- Strips GREASE values (consumers re-inject via `enable_grease` flag).
+- Emits JSON on **stdout**, diagnostics + JA3/JA4 hashes on **stderr**.
 
-Output is **this machine's actual OpenSSL/BoringSSL stack behavior** — the real fingerprint you can replay elsewhere. ALPN + SNI are pinned to match real Claude Code CLI (`[h2, http/1.1]` + `api.anthropic.com`) so the captured fingerprint is in the same "shape" as a real CC client without you needing CC installed.
-
-## Why
-
-Different OSes / Node versions produce different TLS ClientHellos. If you're building a fingerprint mocking stack ([utls](https://github.com/refraction-networking/utls), [curl-impersonate](https://github.com/lwthiker/curl-impersonate), etc.), you need a pool of **real** captured profiles to replay — not synthetic ones. This tool gets you one profile per environment in a single command.
+The captured fingerprint is **this machine's actual OpenSSL/BoringSSL stack behavior** — the real one you can replay elsewhere.
 
 ## Prerequisites
 
-- `go ≥ 1.22`
-- `node ≥ 18`
-- `curl`
-
-(That's all. No `git`, no `npm`, no admin rights.)
+- `node ≥ 18` ← that's it. No Go, no Python, no npm install.
+- `curl` to pull the script.
 
 ## Usage
 
-### Public repo
+### Public repo (most cases)
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/run.sh)
+curl -fsSL https://raw.githubusercontent.com/zstringcc/tlspeek/main/tlspeek.js | node
 ```
 
-### Private repo / behind token
+### Private repo / need a token
 ```bash
 GITHUB_TOKEN=ghp_xxx bash <(curl -fsSL \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -44,32 +38,26 @@ GITHUB_TOKEN=ghp_xxx bash <(curl -fsSL \
   https://api.github.com/repos/zstringcc/tlspeek/contents/run.sh)
 ```
 
-### Install as a persistent binary
-```bash
-# For private repo: setup once
-export GOPRIVATE=github.com/zstringcc/*
-
-go install github.com/zstringcc/tlspeek@latest
-tlspeek
-```
-
-### Common pipe idioms
+### Common pipe patterns
 
 ```bash
-# macOS — straight to clipboard
-bash <(curl -fsSL .../run.sh) | pbcopy
+# Only JSON, hide progress info
+curl -fsSL .../tlspeek.js | node 2>/dev/null
 
-# Linux — clipboard
-bash <(curl -fsSL .../run.sh) | xclip -sel clip
+# Straight to clipboard — macOS
+curl -fsSL .../tlspeek.js | node 2>/dev/null | pbcopy
 
-# To a file
-bash <(curl -fsSL .../run.sh) > profile.json
+# Straight to clipboard — Linux
+curl -fsSL .../tlspeek.js | node 2>/dev/null | xclip -sel clip
 
-# Filter / verify with jq
-bash <(curl -fsSL .../run.sh) | jq '{ name, cipher_count: (.cipher_suites|length), alpn: .alpn_protocols }'
+# Write to a file
+curl -fsSL .../tlspeek.js | node 2>/dev/null > profile.json
 
-# Capture and POST to a profile-receiving API in one shot
-bash <(curl -fsSL .../run.sh) | \
+# Filter with jq
+curl -fsSL .../tlspeek.js | node 2>/dev/null | jq '{name, alpn_protocols, cipher_count: (.cipher_suites|length)}'
+
+# Capture and POST to a TLS-profile-receiving API, no file write
+curl -fsSL .../tlspeek.js | node 2>/dev/null | \
   curl -X POST https://your-api.example/v1/tls-profiles \
        -H "Authorization: Bearer $TOKEN" \
        -H "Content-Type: application/json" \
@@ -95,53 +83,53 @@ bash <(curl -fsSL .../run.sh) | \
 }
 ```
 
-Field names are snake_case to match common TLS profile schemas. GREASE values are stripped from `cipher_suites` / `curves` / `extensions` — set `enable_grease: true` if your consumer re-injects GREASE.
-
-JA3 + simplified JA4 hashes are printed on **stderr** for human inspection (so they don't pollute the JSON output).
+Field names are snake_case to match common TLS profile schemas. JA3 + simplified JA4 hashes are printed on **stderr** for human inspection (not in the JSON output).
 
 ## How it works
 
-1. **Listen on a random localhost port.** Just a `net.Listen("tcp", "127.0.0.1:0")`, no TLS setup.
-2. **Spawn Node.** `node -e <inline script>` with `tls.connect()` to our listener, explicitly setting ALPN `[h2, http/1.1]` + SNI `api.anthropic.com` + `minVersion: TLSv1.2`. `NODE_TLS_REJECT_UNAUTHORIZED=0` so Node doesn't bail on the cert it never receives.
-3. **Read first TLS record** (5-byte header + handshake message ≈ 1.5 KB total) — do not respond. Close connection.
-4. **Parse ClientHello.** Manual TLS 1.3 spec parser for handshake header / random / session_id / cipher_suites / compression_methods / extensions. Extensions parsed: server_name (0), supported_groups (10), ec_point_formats (11), signature_algorithms (13), ALPN (16), supported_versions (43), psk_key_exchange_modes (45), key_share (51). GREASE detected via RFC 8701 pattern.
-5. **Emit.** JSON to stdout, summary + JA3/JA4 to stderr.
+1. `net.createServer()` on a random `127.0.0.1` port — no TLS termination.
+2. `tls.connect()` in the same Node process, explicitly setting:
+   - `ALPNProtocols: ['h2', 'http/1.1']` (real Claude Code CLI default)
+   - `servername: 'api.anthropic.com'` (so server_name extension is non-trivial)
+   - `minVersion: 'TLSv1.2'`
+   - `rejectUnauthorized: false` (we never actually serve a cert)
+3. Server side accumulates the first TCP chunks until a full TLS record is buffered, then closes.
+4. Parse ClientHello (TLS 1.3 spec): record header → handshake message → cipher_suites / compression_methods / extensions (server_name(0), supported_groups(10), ec_point_formats(11), signature_algorithms(13), ALPN(16), supported_versions(43), psk_key_exchange_modes(45), key_share(51)). GREASE detected via RFC 8701.
+5. Emit JSON to stdout, summary + JA3/JA4 to stderr.
 
-No network egress, no files written, no privileged operations.
+No network egress. No files written. No privileged operations.
 
 ## Multi-machine workflow
 
-If you need profiles from many environments (different OSes / Node versions):
-
 ```bash
 # Machine 1 — macOS arm64 + Node 24
-bash <(curl -fsSL .../run.sh) > macos-arm64-node24.json
+curl -fsSL .../tlspeek.js | node 2>/dev/null > mac-arm64-node24.json
 
 # Machine 2 — Linux x64 + Node 22
-bash <(curl -fsSL .../run.sh) > linux-x64-node22.json
+curl -fsSL .../tlspeek.js | node 2>/dev/null > linux-x64-node22.json
 
-# Machine 3 — WSL Ubuntu + Node 20
-bash <(curl -fsSL .../run.sh) > wsl-ubuntu-node20.json
+# Machine 3 — Windows WSL + Node 20
+curl -fsSL .../tlspeek.js | node 2>/dev/null > wsl-node20.json
 
-# ... up to your target pool size
+# Continue across 5-10 environments — total cost: ~2 seconds per machine
 ```
 
-Each run takes ~2 seconds. Collect 5-10+ profiles, feed them into your fingerprint mocking pool, distribute requests across them.
+Each run is identical for the same machine (Node TLS stack is deterministic). Variety comes from running across different OSes + Node versions.
 
 ## Known limitations
 
-- **ALPN is hardcoded `[h2, http/1.1]`** to match real Claude Code CLI behavior. If you need other ALPN lists, edit `nodeFetchScript` in `main.go`.
-- **JA4 is approximate** — not strictly per the [FoxIO-LLC/ja4](https://github.com/FoxIO-LLC/ja4) spec. JA4 is shown on stderr only for human verification; it's not in the JSON output.
-- **Same machine, same fingerprint.** Node's underlying TLS stack is deterministic, so running this tool twice on the same machine gives identical profiles (modulo random bytes / session IDs which we strip anyway). Run on different machines to get diversity.
+- **ALPN pinned to `[h2, http/1.1]`** to match real Claude Code CLI. Edit the `ALPNProtocols` line in `tlspeek.js` if you need different.
+- **JA4 approximation** — not strictly per the [FoxIO-LLC/ja4](https://github.com/FoxIO-LLC/ja4) spec. Shown on stderr for human verification only; not in JSON output.
+- **Deterministic** — same machine + same Node version always produces the same JSON. Diversity must come from running on different environments.
 
 ## Troubleshooting
 
 | Error | Cause | Fix |
 |---|---|---|
-| `Node.js is required but not found in PATH` | Node not installed or PATH missing | Install Node ≥ 18, restart shell |
-| `timeout waiting for Node to connect` | Node spawn failed or firewall blocking localhost | Check `node -e "console.log('ok')"`; disable local firewall temporarily |
-| `not a handshake record` | Node connected with non-TLS (shouldn't happen — script forces `tls.connect()`) | File an issue with `node --version` output |
-| HTTP 404 fetching main.go | Repo is private and no GITHUB_TOKEN set | Set `GITHUB_TOKEN` env or fork to a public repo |
+| `command not found: node` | Node not installed | Install Node ≥ 18 from https://nodejs.org |
+| `timeout waiting for ClientHello` | OS firewall blocking localhost | Temporarily disable local firewall |
+| `not a handshake record` | Something else hit your port first | Re-run (random port avoids collision) |
+| `HTTP 404` fetching tlspeek.js | Private repo + no token | Set `GITHUB_TOKEN` env and use run.sh wrapper |
 
 ## License
 
