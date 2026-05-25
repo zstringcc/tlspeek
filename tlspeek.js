@@ -223,13 +223,9 @@ function profileName(env) {
 // Main flow
 // ----------------------------------------------------------------------------
 
-function die(msg, ...args) {
+function die(msg) {
   process.stderr.write('FATAL: ' + msg + '\n');
   process.exit(1);
-}
-
-function logStep(msg) {
-  process.stderr.write(msg + '\n');
 }
 
 function main() {
@@ -265,13 +261,6 @@ function main() {
 
   server.listen(0, '127.0.0.1', () => {
     const port = server.address().port;
-    logStep(`[1/3] Listening on 127.0.0.1:${port} ...`);
-    const env = detectEnv();
-    let envLine = `[2/3] Detected: ${env.platform}/${env.arch}, Node ${env.nodeVersion}`;
-    if (env.ccVersion) envLine += `, Claude Code ${env.ccVersion}`;
-    logStep(envLine);
-    logStep(`[3/3] Opening tls.connect → ClientHello capture ...`);
-
     // Trigger handshake in this same process
     const client = tls.connect({
       host: '127.0.0.1',
@@ -350,16 +339,10 @@ function emit(ch, env) {
   };
 
   const json = JSON.stringify(profile, null, 2);
-  process.stderr.write('\n===== Profile summary =====\n');
-  process.stderr.write(`  Name:           ${name}\n`);
-  process.stderr.write(`  GREASE present: ${ch.hasGREASE}\n`);
-  process.stderr.write(`  SNI:            ${ch.serverName}\n`);
-  process.stderr.write(`  Ciphers:        ${profile.cipher_suites.length}\n`);
-  process.stderr.write(`  Extensions:     ${profile.extensions.length}\n`);
-  process.stderr.write(`  ALPN:           [${ch.alpnProtocols.join(', ')}]\n`);
-  process.stderr.write(`  JA3 hash(sha):  ${sha256Hex(ja3String(ch)).slice(0, 32)}\n`);
-  process.stderr.write(`  JA4 (approx):   ${ja4String(ch)}\n`);
-  process.stderr.write('\n===== Profile JSON (stdout — pipe to pbcopy / jq / curl) =====\n');
+  // One-line summary to stderr (verbose details available in the JSON itself)
+  process.stderr.write(
+    `tlspeek: ${name} — ${profile.cipher_suites.length} ciphers, ${profile.extensions.length} ext, ALPN=[${ch.alpnProtocols.join(', ')}], JA4=${ja4String(ch)}\n`
+  );
   process.stdout.write(json + '\n');
   process.exit(0);
 }
